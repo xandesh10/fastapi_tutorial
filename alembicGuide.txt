@@ -1,0 +1,431 @@
+Let's set up **Alembic from scratch** with your FastAPI \+ PostgreSQL project. I'll keep it practical.
+
+ Assume your project is:
+
+```
+fastApi/
+├── main.py
+├── database.py
+├── models.py
+├── schemas.py
+└── ...
+```
+
+ ## 1\. Install Alembic
+
+ Inside your project:
+
+```
+pip install alembic
+```
+
+ Check it:
+
+```
+alembic --version
+```
+
+---
+
+ ## 2\. Initialize Alembic
+
+ Run this in the same folder as `main.py`:
+
+```
+alembic init alembic
+```
+
+ It creates:
+
+```
+fastApi/
+├── alembic/
+│   ├── versions/
+│   ├── env.py
+│   ├── script.py.mako
+│   └── README
+├── alembic.ini
+├── main.py
+├── database.py
+├── models.py
+└── schemas.py
+```
+
+---
+
+ ## 3\. Configure the database
+
+ You probably already have something like this in `database.py`:
+
+```
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, DeclarativeBase
+
+DATABASE_URL = "postgresql+psycopg://postgres:password@localhost:5432/mydb"
+
+engine = create_engine(DATABASE_URL)
+
+SessionLocal = sessionmaker(
+    bind=engine,
+    autoflush=False,
+    autocommit=False
+)
+
+class Base(DeclarativeBase):
+    pass
+
+def get_db():
+    db = SessionLocal()
+
+    try:
+        yield db
+    finally:
+        db.close()
+```
+
+ For Alembic, you need to tell it about this `Base`.
+
+---
+
+ ## 4\. Configure `env.py`
+
+ Open:
+
+```
+alembic/env.py
+```
+
+ Find:
+
+```
+target_metadata = None
+```
+
+ Change it to:
+
+```
+from database import Base
+from models import Post
+
+target_metadata = Base.metadata
+```
+
+ So near the top you might have:
+
+```
+from database import Base
+from models import Post
+
+target_metadata = Base.metadata
+```
+
+ ### Why import `Post`?
+
+ This is important.
+
+ Your model:
+
+```
+class Post(Base):
+    ...
+```
+
+ gets registered in:
+
+```
+Base.metadata
+```
+
+ Alembic looks at `Base.metadata` to determine what tables your models define.
+
+---
+
+ ## 5\. Configure the PostgreSQL URL
+
+ Open:
+
+```
+alembic.ini
+```
+
+ Find:
+
+```
+sqlalchemy.url = driver://user:pass@localhost/dbname
+```
+
+ Change it to your PostgreSQL connection:
+
+```
+sqlalchemy.url = postgresql+psycopg://postgres:password@localhost:5432/mydb
+```
+
+ For learning, this is okay. In a real project, don't commit your password into `alembic.ini`; use environment variables.
+
+---
+
+ # 6\. Create your first migration
+
+ Suppose your model is:
+
+```
+class Post(Base):
+    __tablename__ = "posts"
+
+    id = Column(Integer, primary_key=True, nullable=False)
+    title = Column(String, nullable=False)
+    content = Column(String, nullable=False)
+    published = Column(Boolean, server_default="TRUE")
+    created_at = Column(
+        TIMESTAMP(timezone=True),
+        server_default=text("now()")
+    )
+```
+
+ Run:
+
+```
+alembic revision --autogenerate -m "create posts table"
+```
+
+ Alembic will create a file:
+
+```
+alembic/
+└── versions/
+    └── abc123_create_posts_table.py
+```
+
+ Inside it you'll see something similar to:
+
+```
+def upgrade():
+    op.create_table(
+        "posts",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("title", sa.String(), nullable=False),
+        sa.Column("content", sa.String(), nullable=False),
+        ...
+    )
+
+def downgrade():
+    op.drop_table("posts")
+```
+
+ **Check this generated file before running it.**
+
+---
+
+ # 7\. Apply the migration
+
+ Now run:
+
+```
+alembic upgrade head
+```
+
+ That's the command that actually changes your PostgreSQL database.
+
+ Your database now has:
+
+```
+posts
+├── id
+├── title
+├── content
+├── published
+└── created_at
+```
+
+---
+
+ # 8\. Now make a change
+
+ This is where Alembic becomes really useful.
+
+ Suppose you change your model:
+
+```
+class Post(Base):
+    __tablename__ = "posts"
+
+    id = Column(Integer, primary_key=True)
+    title = Column(String)
+    content = Column(String)
+    published = Column(Boolean, server_default="TRUE")
+    created_at = Column(TIMESTAMP(timezone=True))
+
+    author = Column(String)  # NEW
+```
+
+ You added:
+
+```
+author = Column(String)
+```
+
+ Don't manually modify PostgreSQL.
+
+ Run:
+
+```
+alembic revision --autogenerate -m "add author to posts"
+```
+
+ Alembic detects:
+
+```
+SQLAlchemy model
+       ↓
+author = Column(String)
+       ↓
+Alembic detects change
+       ↓
+creates migration
+```
+
+ Then apply it:
+
+```
+alembic upgrade head
+```
+
+ Now PostgreSQL has the new column:
+
+```
+posts
+├── id
+├── title
+├── content
+├── published
+├── created_at
+└── author
+```
+
+---
+
+ # 9\. What does `upgrade head` mean?
+
+ Suppose you have:
+
+```
+Migration 1
+    ↓
+Migration 2
+    ↓
+Migration 3
+```
+
+ When you run:
+
+```
+alembic upgrade head
+```
+
+ Alembic applies **all migrations that haven't been applied yet**, up to the latest one (`head`).
+
+ You can see the history with:
+
+```
+alembic history
+```
+
+ And check your current database version with:
+
+```
+alembic current
+```
+
+---
+
+ # 10\. Going backwards
+
+ Suppose you accidentally applied the latest migration.
+
+ You can undo one migration:
+
+```
+alembic downgrade -1
+```
+
+ For example:
+
+```
+upgrade
+    ↓
+add author column
+
+downgrade -1
+    ↓
+remove author column
+```
+
+ This works because Alembic migrations normally contain both:
+
+```
+def upgrade():
+    ...
+```
+
+ and:
+
+```
+def downgrade():
+    ...
+```
+
+---
+
+ ## The commands you need to remember
+
+ For everyday development, these are the important ones:
+
+```
+# Create migration
+alembic revision --autogenerate -m "describe your change"
+
+# Apply migrations
+alembic upgrade head
+
+# Undo latest migration
+alembic downgrade -1
+
+# See migration history
+alembic history
+
+# See current database migration
+alembic current
+```
+
+ The most important workflow is:
+
+```
+1. Change models.py
+       ↓
+2. alembic revision --autogenerate -m "..."
+       ↓
+3. Check migration file
+       ↓
+4. alembic upgrade head
+       ↓
+5. PostgreSQL schema is updated
+```
+
+ One thing I'd recommend for your current project: **remove `Base.metadata.create_all(bind=engine)` from `main.py` once you start using Alembic**. Let Alembic be responsible for creating and changing your tables, rather than having two different systems manage the schema.
+
+
+
+ # Create migration
+alembic revision --autogenerate -m "describe your change"
+
+# Apply migrations
+alembic upgrade head
+
+# Undo latest migration
+alembic downgrade -1
+
+# See migration history
+alembic history
+
+# See current database migration
+alembic current
